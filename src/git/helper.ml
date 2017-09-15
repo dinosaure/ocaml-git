@@ -15,43 +15,15 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
+  module Log =
+  struct
+    let src = Logs.Src.create "git.helper" ~doc:"logs git's internal helper"
+    include (val Logs.src_log src : Logs.LOG)
+  end
+
 let ppe ~name ppv =
+  Log.err (fun l -> l "PPE");
   Fmt.braces (fun ppf -> Fmt.pf ppf "%s %a" name (Fmt.hvbox ppv))
-
-module BaseBigstring
-  : S.BASE with type t = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t =
-struct
-  open Bigarray
-
-  type t = (char, int8_unsigned_elt, c_layout) Array1.t
-
-  let length x = Array1.dim x
-
-  exception Break of int
-
-  external uget : t -> int -> int = "%caml_ba_ref_1"
-
-  let compare a b =
-    if length a <> length b
-    then 0
-    else
-      try
-        for i = 0 to length a - 1
-        do if uget a i <> uget b i then raise (Break ((uget a i) - (uget b i))) done;
-        0
-      with Break n -> n
-
-  let equal a b = compare a b = 0
-
-  let hash = Hashtbl.hash
-
-  let pp ppf ba =
-    for i = 0 to length ba - 1
-    do Fmt.pf ppf "%02x" (uget ba i) done
-
-  module Set = Set.Make(struct type nonrec t = t let compare = compare end)
-  module Map = Map.Make(struct type nonrec t = t let compare = compare end)
-end
 
 module BaseBytes :
 sig
@@ -121,7 +93,7 @@ module MakeDecoder (A : S.ANGSTROM)
   let pp_error ppf (`Decoder err) = ppe ~name:"`Decoder" Fmt.string ppf err
 
   type decoder =
-    { state    : Angstrom.input -> Angstrom.Unbuffered.more -> A.t Angstrom.Unbuffered.state
+    { state    : Angstrom.bigstring -> Angstrom.Unbuffered.more -> A.t Angstrom.Unbuffered.state
     ; final    : Angstrom.Unbuffered.more
     ; internal : Cstruct.t
     ; max      : int }
@@ -163,14 +135,23 @@ module MakeDecoder (A : S.ANGSTROM)
     ; max      = len }
 
   let eval decoder =
-    match decoder.state (`Bigstring (Cstruct.to_bigarray decoder.internal)) decoder.final with
-    | Angstrom.Unbuffered.Done (consumed, value) -> `End (Cstruct.shift decoder.internal consumed, value)
+    Log.debug (fun l -> l "Start to decode a partial chunk of the flow (%d)."
+                  (Cstruct.len decoder.internal));
+
+    match decoder.state (Cstruct.to_bigarray decoder.internal) decoder.final with
+    | Angstrom.Unbuffered.Done (consumed, value) ->
+      Log.debug (fun l -> l "End of the decoding.");
+
+      `End (Cstruct.shift decoder.internal consumed, value)
     | Angstrom.Unbuffered.Fail (consumed, path, err) ->
       Log.err (fun l -> l "Retrieving an error in the current decoding: %s (%s)."
                   err (String.concat " > " path));
+      Log.err (fun l -> l "Production of the error in Helper.MakeDecoder.eval.");
       `Error (Cstruct.shift decoder.internal consumed, `Decoder (String.concat " > " path ^ ": " ^ err))
     | Angstrom.Unbuffered.Partial
         { Angstrom.Unbuffered.committed; continue; } ->
+      Log.debug (fun l -> l "Current decoding waits more input.");
+
       let decoder = { decoder with internal = Cstruct.shift decoder.internal committed
                                  ; state = continue } in
       `Await decoder
@@ -185,11 +166,15 @@ module MakeDecoder (A : S.ANGSTROM)
   let refill input decoder =
     let len = Cstruct.len input in
 
+    Log.debug (fun l -> l "Starting to refill the internal buffer \
+                           of the current decoding (len: %d)." (Cstruct.len input));
+
     if len > decoder.max
     then begin
       (* XXX(dinosaure): it's to avoid to grow the internal buffer. *)
       Log.err (fun l -> l "The client want to refill the internal buffer by a bigger input.");
 
+      Log.err (fun l -> l "Production of the error in Helper.MakeDecoder.refill.");
       Error (`Decoder (Fmt.strf "Input is too huge: we authorized only an \
                                  input lower or equal than %d" decoder.max))
     end else
@@ -204,21 +189,21 @@ module MakeDecoder (A : S.ANGSTROM)
         Bigarray.Array1.dim buffer - len
       in
 
-      if _trailing_space >= len
-      then Ok decoder
-      else if _writable_space >= len
-      then Ok (compress input decoder)
-      else begin
-        Log.err (fun l -> l "trailing space:%d and writable space:%d, \
-                             the alteration is not done, the error could \
-                             be the size of the internal buffer (%d) or the input \
-                             is malicious."
-                    _trailing_space
-                    _writable_space
-                    (Bigarray.Array1.dim decoder.internal.Cstruct.buffer));
-        Error (`Decoder "Input does not respect assertion, it may be malicious");
-      end
-
+      (if _trailing_space >= len
+       then Ok decoder
+       else if _writable_space >= len
+       then Ok (compress input decoder)
+       else begin
+         Log.err (fun l -> l "trailing space:%d and writable space:%d, \
+                              the alteration is not done, the error could \
+                              be the size of the internal buffer (%d) or the input \
+                              is malicious."
+                     _trailing_space
+                     _writable_space
+                     (Bigarray.Array1.dim decoder.internal.Cstruct.buffer));
+         Log.err (fun l -> l "Production of the error in Helper.MakeDecoder.refill.");
+         Error (`Decoder "Input does not respect assertion, it may be malicious");
+       end)
       |> function Error err -> Error err
                 | Ok decoder ->
                   let internal = Cstruct.add_len decoder.internal len in
@@ -226,10 +211,12 @@ module MakeDecoder (A : S.ANGSTROM)
                   let off = Cstruct.len internal - len in
                   let ()  = Cstruct.blit input 0 internal off len in
 
+                  Log.debug (fun l -> l "Refill the internal buffer in the current decoding.");
+
                   Ok { decoder with internal = internal }
 
   let to_result input =
-    Angstrom.parse_only A.decoder (`Bigstring (Cstruct.to_bigarray input))
+    Angstrom.parse_bigstring A.decoder (Cstruct.to_bigarray input)
     |> function Ok v -> Ok v
               | Error err -> Error (`Decoder err)
 
@@ -266,8 +253,21 @@ struct
 
   let pp_error ppf = function
     | `Decoder err ->
+      print_endline "Decoder";
+      let ptr : int = Obj.magic err in
+      print_int ptr;
+      print_newline ();
+      print_endline "toto";
+      let tag = Obj.tag (Obj.repr err) in
+      print_int tag;
+      print_newline ();
+      print_int (String.length err);
+      Obj.set_tag (Obj.repr err) 252;
+      print_endline err;
+      print_newline ();
       ppe ~name:"`Decoder" Fmt.string ppf err
     | `Inflate err ->
+      print_endline "Inflate";
       ppe ~name:"`Inflate" (Fmt.hvbox Z.pp_error) ppf err
 
   let default (window, raw0, raw1) =
@@ -279,16 +279,27 @@ struct
             @@ Z.default (Z.window_reset window)
     ; dec = D.default raw1 }
 
-  let rec eval decoder = match D.eval decoder.dec with
+  let rec eval decoder =
+    Log.debug (fun l -> l "Start to inflate a partial chunk of the flow.");
+
+    match D.eval decoder.dec with
     | `Await dec ->
+      Log.debug (fun l -> l "Decoder waits.");
+
       (match Z.eval ~src:decoder.cur ~dst:decoder.tmp decoder.inf with
        | `Await inf ->
+         Log.debug (fun l -> l "Inflator waits.");
+
          `Await { decoder with cur = Cstruct.shift decoder.cur (Z.used_in inf)
                              ; inf = inf
                              ; dec = dec }
        | `Flush inf ->
+         Log.debug (fun l -> l "Inflator flushes.");
+
          (match D.refill (Cstruct.sub decoder.tmp 0 (Z.used_out inf)) dec with
           | Ok dec ->
+            Log.debug (fun l -> l "Internal buffer of the current decoding refilled.");
+
             let inf = Z.flush 0 (Cstruct.len decoder.tmp) inf in
 
             eval { decoder with dec = dec
@@ -298,6 +309,8 @@ struct
          Log.err (fun l -> l "Inflate error: %a." (Fmt.hvbox Z.pp_error) err);
          `Error (Cstruct.shift decoder.cur (Z.used_in inf), `Inflate err)
        | `End inf ->
+         Log.debug (fun l -> l "Inflator finished with the current decoding flow.");
+
          (match D.refill (Cstruct.sub decoder.tmp 0 (Z.used_out inf)) dec with
           | Ok dec -> eval { decoder with cur = Cstruct.shift decoder.cur (Z.used_in inf)
                                         ; inf = Z.flush 0 0 inf

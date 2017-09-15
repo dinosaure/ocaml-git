@@ -105,10 +105,18 @@ module Make
     | E.error ]
 
   let pp_error ppf = function
-    | #D.error as err -> D.pp_error ppf err
-    | #E.error as err -> E.pp_error ppf err
-    | `SystemFile sys_err -> Helper.ppe ~name:"`SystemFile" FileSystem.File.pp_error ppf sys_err
-    | `SystemDirectory sys_err -> Helper.ppe ~name:"`SystemDirectory" FileSystem.Dir.pp_error ppf sys_err
+    | #D.error as err ->
+      print_endline "D.error";
+      D.pp_error ppf err
+    | #E.error as err ->
+      print_endline "E.error";
+      E.pp_error ppf err
+    | `SystemFile sys_err ->
+      print_endline "SystemFile";
+      Helper.ppe ~name:"`SystemFile" FileSystem.File.pp_error ppf sys_err
+    | `SystemDirectory sys_err ->
+      print_endline "SystemDirectory";
+      Helper.ppe ~name:"`SystemDirectory" FileSystem.Dir.pp_error ppf sys_err
 
   let hash_get : Hash.t -> int -> int = fun h i -> Char.code @@ Hash.get h i
 
@@ -159,8 +167,8 @@ module Make
                     (Hash.of_hex Path.((to_string first) ^ (to_string path)))
                     |> fun v -> Lwt.return (v :: acc)
                   with _ ->
-                    Log.warn (fun l -> l "Retrieving a malformed file: %s."
-                                 Path.((to_string first) ^ (to_string path)));
+                    Log.warn (fun l -> l "Retrieving a malformed file: %s / %s."
+                                 (Path.to_string first) (Path.to_string path));
                     Lwt.return acc)
                acc
                paths

@@ -36,7 +36,7 @@ sig
     : S.ENCODER with type t = t
                  and type raw = Cstruct.t
   module A
-    : S.ANGSTROM with type t = t
+    : sig type nonrec t = t val decoder : int -> t Angstrom.t end
   module F
     : S.FARADAY  with type t = t
 
@@ -57,21 +57,31 @@ module Make
   struct
     type nonrec t = t
 
-    let decoder =
-      let buf = Buffer.create 32 in
+    let decoder len =
+      let buf = Buffer.create len in
       let open Angstrom in
 
       fix @@ fun m ->
-      available >>= function
+      Log.debug (fun l -> l "We will call [available] to know how byte(s) we have.");
+      available >>= fun n ->
+      Log.debug (fun l -> l "We have %d byte(s) available in the current internal Angstrom buffer." n);
+      match n with
       | 0 ->
+        Log.debug (fun l -> l "We will call [peek_char] to get the next input.");
         peek_char
-        >>= (function
+        >>= (fun next ->
+             Log.debug (fun l -> l "Angstrom.peek_char returns a Some? %b." (match next with Some _ -> true | None -> false));
+
+            match next with
             | Some _ -> commit *> m
             | None ->
               let cs = Cstruct.of_string (Buffer.contents buf) in
               Buffer.clear buf;
               return cs <* commit)
-      | n -> take n >>= fun chunk ->
+      | n ->
+        Log.debug (fun l -> l "We will consume %d byte(s) and put it in the current buffer." n);
+        take n >>= fun chunk ->
+        Log.debug (fun l -> l "We take the next part (in Angstrom).");
         Buffer.add_string buf chunk;
         commit *> m
   end
@@ -98,6 +108,7 @@ module Make
     type error = [ `Decoder of string ]
 
     let pp_error ppf (`Decoder err) =
+      Log.err (fun l -> l "Production of this error: Blob.pp_error.");
       Helper.ppe ~name:"`Decoder" Fmt.string ppf err
 
     type decoder = { res : t

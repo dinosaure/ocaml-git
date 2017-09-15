@@ -18,7 +18,7 @@
 open Lwt.Infix
 
 module Make (S : Minimal.S with type Hash.Digest.buffer = Cstruct.t
-                              and type Hash.hex = string)
+                            and type Hash.hex = string)
 = struct
   module Store = S
 
@@ -67,6 +67,12 @@ module Make (S : Minimal.S with type Hash.Digest.buffer = Cstruct.t
   module K = Graph.Imperative.Digraph.ConcreteBidirectional(Store.Hash)
   module T = Graph.Topological.Make(K)
 
+  module Log =
+  struct
+    let src = Logs.Src.create "git.object_graph" ~doc:"logs git's internal graph computation"
+    include (val Logs.src_log src : Logs.LOG)
+  end
+
   module Search = struct
     include Search.Make(Store)
     include Search
@@ -82,18 +88,27 @@ module Make (S : Minimal.S with type Hash.Digest.buffer = Cstruct.t
     let g = C.create () in
 
     Store.contents t >>= function
-    | Error _ -> Lwt.return g
+    | Error err ->
+      Log.err (fun l -> l "Retrieve an error when we list the git repository: %a." Store.pp_error err);
+      Lwt.return g
     | Ok nodes ->
       List.iter (C.add_vertex g) nodes;
 
       begin
-        Lwt_list.iter_p (fun (id, _ as src) ->
+        Lwt_list.iter_s (fun (id, _ as src) ->
+            Log.debug (fun l -> l "Search predecessors of %a." Store.Hash.pp id);
+
             Search.pred t id >>= fun preds ->
-            Lwt_list.iter_p (fun s ->
+            Lwt_list.iter_s (fun s ->
                 let l, h = label s in
+
+                Log.debug (fun l -> l "Read the object: %a." Store.Hash.pp h);
+
                 Store.read t h >>= function
                 | Ok v -> C.add_edge_e g (src, l, (h, v)); Lwt.return_unit
-                | Error _ -> Lwt.return () (* XXX(dinosaure): quiet this error? *)
+                | Error err ->
+                  Log.err (fun l -> l "Retrieve an error when we try to read %a: %a." Store.Hash.pp h Store.pp_error err);
+                  Lwt.return () (* XXX(dinosaure): quiet this error? *)
               ) preds
           ) nodes
       end >>= fun () -> Lwt.return g
@@ -135,10 +150,9 @@ module Make (S : Minimal.S with type Hash.Digest.buffer = Cstruct.t
           ) nodes
       end >>= fun () -> Lwt.return g
 
-  let to_dot t buf =
-    let fmt = Format.formatter_of_buffer buf in
+  let to_dot t ppf =
     of_store t >>= fun g ->
-    Dot.fprint_graph fmt g;
+    Dot.fprint_graph ppf g;
     Lwt.return_unit
 
   let closure ?(full=true) t ~min ~max =
@@ -181,5 +195,5 @@ module Make (S : Minimal.S with type Hash.Digest.buffer = Cstruct.t
       (fun a k -> Store.read t k >|= function Ok v -> (k, v) :: a
                                             | Error _ -> a)
       [] keys
-    (* XXX(dinosaure): needed to use [map_p]. *)
+      (* XXX(dinosaure): needed to use [map_p]. *)
 end

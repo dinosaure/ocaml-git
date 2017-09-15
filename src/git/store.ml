@@ -668,8 +668,12 @@ module Make
   type error = [ Loose.error | Pack.error ]
 
   let pp_error ppf = function
-    | #Loose.error as err -> Fmt.pf ppf "%a" Loose.pp_error err
-    | #Pack.error as err -> Fmt.pf ppf "%a" Pack.pp_error err
+    | #Loose.error as err ->
+      print_endline "LOOSE";
+      Fmt.pf ppf "%a" Loose.pp_error err
+    | #Pack.error as err ->
+      print_endline "PACK";
+      Fmt.pf ppf "%a" Pack.pp_error err
 
   let read_p ~ztmp ~dtmp ~raw ~window state hash =
     let open Lwt.Infix in
@@ -766,6 +770,8 @@ module Make
         Loose.raw_wa ~window ~ztmp ~dtmp ~raw ~result state hash >>= function
         | Error #Loose.error -> Lwt.return None
         | Ok v -> Lwt.return (Some v)
+
+  [@@@warning "-32"]
 
   let raw_was ?htmp result t hash =
     raw_wa
