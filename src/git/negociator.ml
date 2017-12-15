@@ -151,6 +151,12 @@ module Make (G: Minimal.S): S with module Store = G = struct
     { pq              : Pq.t
     ; non_common_revs : int }
 
+  let pp_rev ppf rev =
+    Fmt.pf ppf "{ @[<hov>pq = %a;@ \
+                  non_common_revs = %d;@] }"
+      (Fmt.hvbox (Pq.pp Fmt.Dump.(pair Store.Hash.pp V.pp))) rev.pq
+      rev.non_common_revs
+
   let push hash value mark rev =
     if (value.V.flags :> int) land mark = 0
     then begin
@@ -269,6 +275,24 @@ module Make (G: Minimal.S): S with module Store = G = struct
     ; in_fly   : Store.Hash.t list }
   type nonrec acks = Store.Hash.t acks
 
+  let pp_state ppf state =
+    Fmt.pf ppf "{ @[<hov>ready = %b;@ \
+                  continue = %b;@ \
+                  finish = %b;@ \
+                  count = %d;@ \
+                  flush = %d;@ \
+                  vain = %d;@ \
+                  rev = %a;@ \
+                  in_fly = %a;@] }"
+      state.ready
+      state.continue
+      state.finish
+      state.count
+      state.flush
+      state.vain
+      (Fmt.hvbox pp_rev) state.rev
+      Fmt.Dump.(list Store.Hash.pp) state.in_fly
+
   (* XXX(dinosaure): to be clear, this implementation is very bad and we need to
      change it (TODO). For example, the [in_fly] field is used only one time (in
      the second call of [continue]. Then, we never used this field. You need to
@@ -331,8 +355,17 @@ module Make (G: Minimal.S): S with module Store = G = struct
     in
 
     let continue { acks; _ } state =
+      Log.debug (fun l -> l ~header:"find_common"
+                    "Start to negociate: %a."
+                    (Fmt.hvbox pp_state) state);
+
+
       let rec go state have = function
-        | [] -> Lwt.return (state, have)
+        | [] ->
+          Log.debug (fun l -> l ~header:"continue"
+                        "End to analyze the server response and fill: %a."
+                        (Fmt.hvbox (Fmt.Dump.list Store.Hash.pp)) have);
+          Lwt.return (state, have)
         | (_, `ACK) :: _ ->
           (* XXX(dinosaure): without multi-ack or multi-ack-detailed,
              upload-pack sends 'ACK obj-id' on the first common object it finds.

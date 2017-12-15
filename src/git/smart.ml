@@ -834,7 +834,8 @@ struct
     | ACK hash -> Fmt.pf ppf "(ACK %a)" Hash.pp hash
     | ERR err -> Fmt.pf ppf "(ERR %s)" err
 
-  let p_negociation_result ~pkt k decoder = match pkt with
+  let p_negociation_result ~pkt k decoder =
+    match pkt with
     | `Flush -> raise (Leave (err_unexpected_flush_pkt_line decoder))
     | `Empty -> raise (Leave (err_unexpected_empty_pkt_line decoder))
     | `Malformed -> raise (Leave (err_malformed_pkt_line decoder))
@@ -872,13 +873,19 @@ struct
       | Some 'A', `Multi_ack_detailed ->
         let (hash, detail) = multi_ack_detailed decoder in
         let rest = List.filter (fun hash' -> not (Hash.equal hash hash')) rest in
-        let next = p_negociation ~mode k rest { acks with acks = (hash, detail) :: acks.acks } in
-        p_pkt_line next decoder
+        let next =
+          if List.length rest > 0
+          then p_pkt_line (p_negociation ~mode k rest { acks with acks = (hash, detail) :: acks.acks })
+          else k { acks with acks = List.rev acks.acks } ~pkt:`Empty in
+        next decoder
       | Some 'A', `Multi_ack ->
         let hash = multi_ack decoder in
         let rest = List.filter (fun hash' -> not (Hash.equal hash hash')) rest in
-        let next = p_negociation ~mode k rest { acks with acks = (hash, `Continue) :: acks.acks } in
-        p_pkt_line next decoder
+        let next =
+          if List.length rest > 0
+          then p_pkt_line (p_negociation ~mode k rest { acks with acks = (hash, `Continue) :: acks.acks })
+          else k { acks with acks = List.rev acks.acks } ~pkt:`Empty in
+        next decoder
       | Some 'A', `Ack ->
         let hash = ack decoder in
         k { acks with acks = [ (hash, `ACK) ] } ~pkt:`Empty decoder
