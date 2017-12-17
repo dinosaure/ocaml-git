@@ -598,11 +598,7 @@ module Make_ext
              |> (fun uri -> Uri.with_port uri port))
         in
 
-        negociation_request `Flush has >>= fun resp ->
-
-        Log.debug (fun l -> l ~header:"fetch" "Receiving the first negotiation response.");
-
-        let result resp =
+        let negociation_result resp =
           consume (Web.Response.body resp)
             (Decoder.decode decoder Decoder.NegociationResult) >>= function
           | Error err -> Lwt.return (Error (`SmartDecoder err))
@@ -611,102 +607,111 @@ module Make_ext
             Lwt_result.(populate ?stdout ?stderr git stream >>= fun (_, n) -> Lwt.return (Ok (first :: rest, n)))
         in
 
-        let rec loop ?(done_or_flush = `Flush) state resp = match done_or_flush with
-          | `Done ->
-            Lwt_mvar.take keeper >>= fun has -> Lwt_mvar.put keeper has >>= fun () ->
+        match has with
+        | [] ->
+          negociation_request `Done []
+          >>= negociation_result
+        | has ->
+          negociation_request `Flush has >>= fun resp ->
 
-            Log.debug (fun l -> l ~header:"fetch"
-                          "Receive the final negociation response from \
-                           the server.");
+          Log.debug (fun l -> l ~header:"fetch" "Receiving the first negotiation response.");
 
-            consume (Web.Response.body resp)
-              (Decoder.decode decoder (Decoder.Negociation (has, ack_mode)))
-            >>= (function
-                | Error err ->
-                  Lwt.return (Error (`SmartDecoder err))
-                | Ok acks ->
-                  Log.debug (fun l -> l ~header:"fetch"
-                                "Final ACK response received: %a."
-                                Decoder.pp_acks acks);
-                  result resp)
-          | `Flush ->
-            Lwt_mvar.take keeper >>= fun has -> Lwt_mvar.put keeper has >>= fun () ->
+          let rec loop ?(done_or_flush = `Flush) state resp = match done_or_flush with
+            | `Done ->
+              Lwt_mvar.take keeper >>= fun has -> Lwt_mvar.put keeper has >>= fun () ->
 
-            Log.debug (fun l -> l ~header:"fetch" "Receiving a negotiation response.");
+              Log.debug (fun l -> l ~header:"fetch"
+                            "Receive the final negociation response from \
+                             the server.");
 
-            consume (Web.Response.body resp)
-              (Decoder.decode decoder (Decoder.Negociation (has, ack_mode))) >>= function
-            | Error err ->
-              Lwt.return (Error (`SmartDecoder err))
-            | Ok acks ->
-              Log.debug (fun l -> l ~header:"fetch" "ACK response received: %a." Decoder.pp_acks acks);
+              consume (Web.Response.body resp)
+                (Decoder.decode decoder (Decoder.Negociation (has, ack_mode)))
+              >>= (function
+                  | Error err ->
+                    Lwt.return (Error (`SmartDecoder err))
+                  | Ok acks ->
+                    Log.debug (fun l -> l ~header:"fetch"
+                                  "Final ACK response received: %a."
+                                  Decoder.pp_acks acks);
+                    negociation_result resp)
+            | `Flush ->
+              Lwt_mvar.take keeper >>= fun has -> Lwt_mvar.put keeper has >>= fun () ->
 
-              negociate acks state >>= function
-              | `Ready, _ ->
-                Log.debug (fun l -> l ~header:"fetch" "Ready to download the PACK file.");
-                result resp
-              | `Again has', state ->
-                Log.debug
-                  (fun l -> l ~header:"fetch" "Try again a new common \
-                                               trunk between the \
-                                               client and the server.");
-                Lwt_mvar.take keeper >>= fun has ->
-                let has = has @ has' in
-                Lwt_mvar.put keeper has >>= fun () ->
+              Log.debug (fun l -> l ~header:"fetch" "Receiving a negotiation response.");
 
-                negociation_request `Flush has >>= loop state
-              | `Done, _ ->
-                (* XXX(dinosaure): about this behaviour. Firstly, it's
-                   just because the HTTP protocol's documentation is a
-                   shit. A "TODO" is not enough to understand what
-                   happens. The structure of the Git code is a joke
-                   too when it mixes the Smart protocol with the
-                   negociation engine over the stateless HTTP
-                   protocol.
+              consume (Web.Response.body resp)
+                (Decoder.decode decoder (Decoder.Negociation (has, ack_mode))) >>= function
+              | Error err ->
+                Lwt.return (Error (`SmartDecoder err))
+              | Ok acks ->
+                Log.debug (fun l -> l ~header:"fetch" "ACK response received: %a." Decoder.pp_acks acks);
 
-                   So, at this stage, in the server-side, it does not
-                   find the smallest pack file yet - it does not
-                   return [`Ready]. However, the local negociation
-                   engine can not get more hashes (because we retrieve
-                   the [vain] limit or because we get all commits of
-                   the repository). So, the key is to resend a
-                   negociation request but with a [`Done] packet at
-                   the end to say to server: ok, it's enough, gimme
-                   the PACK file now.
+                negociate acks state >>= function
+                | `Ready, _ ->
+                  Log.debug (fun l -> l ~header:"fetch" "Ready to download the PACK file.");
+                  negociation_result resp
+                | `Again has', state ->
+                  Log.debug
+                    (fun l -> l ~header:"fetch" "Try again a new common \
+                                                 trunk between the \
+                                                 client and the server.");
+                  Lwt_mvar.take keeper >>= fun has ->
+                  let has = has @ has' in
+                  Lwt_mvar.put keeper has >>= fun () ->
 
-                   From the current response, we can evade [has] with
-                   only [`Common] noticed hashes and it's really
-                   important. Because we want a response of the server
-                   which contains equaly these hashes.
+                  negociation_request `Flush has >>= loop state
+                | `Done, _ ->
+                  (* XXX(dinosaure): about this behaviour. Firstly, it's
+                     just because the HTTP protocol's documentation is a
+                     shit. A "TODO" is not enough to understand what
+                     happens. The structure of the Git code is a joke
+                     too when it mixes the Smart protocol with the
+                     negociation engine over the stateless HTTP
+                     protocol.
 
-                   In other case, we could put some non-common hashes
-                   and the server will miss them. Then, for the next
-                   parsing if we send non-common hashes, we CANNOT
-                   differenciate an ACK from the negociation and the
-                   last ACK (negociation result) because we cannot
-                   dismiss ACK from the negociation with [has] ([has]
-                   should be more large than the server response). So
-                   we retreive an error because the parsing expects an
-                   ACK which has this form "ACK hash detail" but we
-                   get the ACK result which has this from "ACK hash".
+                     So, at this stage, in the server-side, it does not
+                     find the smallest pack file yet - it does not
+                     return [`Ready]. However, the local negociation
+                     engine can not get more hashes (because we retrieve
+                     the [vain] limit or because we get all commits of
+                     the repository). So, the key is to resend a
+                     negociation request but with a [`Done] packet at
+                     the end to say to server: ok, it's enough, gimme
+                     the PACK file now.
 
-                   To differenciate these ACK, we need to evade
-                   previous ACKs from the [has] list and when we check
-                   all ACKs which should appear on the [has] list, we
-                   expect the last ACK result.
+                     From the current response, we can evade [has] with
+                     only [`Common] noticed hashes and it's really
+                     important. Because we want a response of the server
+                     which contains equaly these hashes.
 
-                   So, we evade [has], send it to the server and it
-                   will respond with exactly what we send noticed as
-                   [`Common], then, it write the final ACK result and
-                   we can get the PACK file, finally. *)
-                Lwt_mvar.take keeper >>= fun _ ->
-                let has = List.map (fun (hash, _) -> hash) acks.Decoder.acks in
-                Lwt_mvar.put keeper has >>= fun () ->
+                     In other case, we could put some non-common hashes
+                     and the server will miss them. Then, for the next
+                     parsing if we send non-common hashes, we CANNOT
+                     differenciate an ACK from the negociation and the
+                     last ACK (negociation result) because we cannot
+                     dismiss ACK from the negociation with [has] ([has]
+                     should be more large than the server response). So
+                     we retreive an error because the parsing expects an
+                     ACK which has this form "ACK hash detail" but we
+                     get the ACK result which has this from "ACK hash".
 
-                negociation_request `Done has >>= loop ~done_or_flush:`Done state
-        in
+                     To differenciate these ACK, we need to evade
+                     previous ACKs from the [has] list and when we check
+                     all ACKs which should appear on the [has] list, we
+                     expect the last ACK result.
 
-        loop ~done_or_flush:(if List.length has = 0 then `Done else `Flush) nstate resp
+                     So, we evade [has], send it to the server and it
+                     will respond with exactly what we send noticed as
+                     [`Common], then, it write the final ACK result and
+                     we can get the PACK file, finally. *)
+                  Lwt_mvar.take keeper >>= fun _ ->
+                  let has = List.map (fun (hash, _) -> hash) acks.Decoder.acks in
+                  Lwt_mvar.put keeper has >>= fun () ->
+
+                  negociation_request `Done has >>= loop ~done_or_flush:`Done state
+          in
+
+          loop ~done_or_flush:(if List.length has = 0 then `Done else `Flush) nstate resp
 
   let want_handler git choose remote_refs =
     (* XXX(dinosaure): in this /engine/, for each remote references,

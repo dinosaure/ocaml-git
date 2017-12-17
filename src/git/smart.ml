@@ -1302,7 +1302,7 @@ struct
                                ; shallow      = http_upload_request.shallow
                                ; deep         = http_upload_request.deep }
      @@ (w_list (w_has ~lf:true) http_upload_request.has)
-     @@ (if List.length http_upload_request.has = 0 || at_the_end = `Done
+     @@ (if at_the_end = `Done
          then w_done_and_lf k
          else pkt_flush k))
       encoder
