@@ -112,16 +112,14 @@ let main show_tags show_heads repository =
   >>!= sync_err
   >>?= fun { Sync_http.Decoder.refs; _ } ->
   let refs =
-    List.filter (fun (_, refname, _) ->
-        let path = Fpath.v refname in
+    List.filter (fun (_, reference, _) ->
+        let path = Git_unix.FS.Reference.to_path reference in
         (List.exists ((=) "tags") (Fpath.segs path) && show_tags)
         || (List.exists ((=) "heads") (Fpath.segs path) && show_heads))
       refs
   in
 
-  List.iter (fun (hash, refname, peeled) ->
-      let reference = Git_unix.FS.Reference.of_string refname in
-
+  List.iter (fun (hash, reference, peeled) ->
       Fmt.(pf stdout) "%a      %a%s\n%!"
         Git_unix.FS.Hash.pp hash
         Git_unix.FS.Reference.pp reference
