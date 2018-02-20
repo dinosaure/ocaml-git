@@ -150,11 +150,10 @@ module TCP = Test_sync.Make(struct
 let () =
   Test_common.verbose ();
   let () = Lwt_main.run (M.init ()) in
-  Alcotest.run "git-mirage" [
-    Test_store.suite "mirage" (module MirageStore);
-    TCP.test_fetch "tcp-sync-fetch" ["git://localhost/"];
-    TCP.test_clone "tcp-sync-clone" [
-      "git://localhost/", "master";
-      "git://github.com/mirage/ocaml-git.git", "master";
-    ]
-  ]
+  Alcotest.run "git-mirage"
+    [ Test_store.suite "mirage" (module MirageStore)
+    ; Test_smart.suite "smart" (module MirageStore)
+    ; TCP.test_fetch "tcp-sync-fetch" [ "git://localhost/" ]
+    ; TCP.test_clone "tcp-sync-clone"
+        [ "git://localhost/", "master"
+        ; "git://github.com/mirage/ocaml-git.git", "master" ] ]

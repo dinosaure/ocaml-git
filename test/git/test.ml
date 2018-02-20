@@ -23,6 +23,6 @@ end
 
 let () =
   verbose ();
-  Alcotest.run "git" [
-    Test_store.suite "mem" (module Store);
-  ]
+  Alcotest.run "git"
+    [ Test_store.suite "mem" (module Store)
+    ; Test_smart.suite "smart" (module Store) ]

@@ -97,20 +97,19 @@ let () =
   Alcotest.run "git-unix"
     [ Test_store.suite "mem" (module MemStore)
     ; Test_store.suite "fs"  (module FsStore)
-    ; TCP1.test_fetch "mem-local-tcp-sync" ["git://localhost/"]
-    ; TCP1.test_clone "mem-remote-tcp-sync" [
-        "git://github.com/mirage/ocaml-git.git", "master";
-        "git://github.com/mirage/ocaml-git.git", "gh-pages";
-      ]
-    ; TCP2.test_fetch "fs-local-tcp-sync" ["git://localhost/"]
-    ; TCP2.test_clone "fs-remote-tcp-sync" [
-        "git://github.com/mirage/ocaml-git.git", "master";
-        "git://github.com/mirage/ocaml-git.git", "gh-pages";
-      ]
-    ; HTTP1.test_clone "mem-http-sync" [
-        "http://github.com/mirage/ocaml-git.git", "gh-pages"
-      ]
-    ; HTTP2.test_clone "fs-https-sync" [
-        "https://github.com/mirage/ocaml-git.git", "gh-pages"
-      ]
-    ]
+    ; Test_smart.suite "smart (mem)" (module MemStore)
+    ; Test_smart.suite "smart (fs)" (module FsStore)
+    ; TCP1.test_fetch "mem-local-tcp-sync"
+        [ "git://localhost/" ]
+    ; TCP1.test_clone "mem-remote-tcp-sync"
+        [ "git://github.com/mirage/ocaml-git.git", "master"
+        ; "git://github.com/mirage/ocaml-git.git", "gh-pages" ]
+    ; TCP2.test_fetch "fs-local-tcp-sync"
+        [ "git://localhost/" ]
+    ; TCP2.test_clone "fs-remote-tcp-sync"
+        [ "git://github.com/mirage/ocaml-git.git", "master"
+        ; "git://github.com/mirage/ocaml-git.git", "gh-pages" ]
+    ; HTTP1.test_clone "mem-http-sync"
+        [ "http://github.com/mirage/ocaml-git.git", "gh-pages" ]
+    ; HTTP2.test_clone "fs-https-sync"
+        [ "https://github.com/mirage/ocaml-git.git", "gh-pages" ] ]
