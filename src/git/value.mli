@@ -92,30 +92,9 @@ module type RAW = sig
   module Value: S
   include module type of Value
 
-  module EE: S.ENCODER
-    with type t = t
-     and type init = int * t
-     and type error = Error.never
-  (** The encoder (which uses a {!Minienc.encoder}) of the Git object.
-      We constraint the output to be a {Cstruct.t}. This encoder needs
-      the value {!t} and the memory consumption of the encoder (in
-      bytes). The encoder can not fail.
-
-      This encoder does not {i deflate} the content (instead {!E}).
-
-      NOTE: we can not unspecified the error type (it needs to be
-      concrete) but, because the encoder can not fail, we define the
-      error as [`Never]. *)
-
-  module EEE: S.ENCODER
-    with type t = t
-     and type init = int * t
-     and type error = Error.never
-
-  module DD: S.DECODER
-    with type t = t
-     and type init = Cstruct.t
-     and type error = Error.Decoder.t
+  module EncoderRaw: S.ENCODER with type t = t and type init = int * t and type error = Error.never
+  module DecoderRaw: S.DECODER with type t = t and type init = Cstruct.t and type error = Error.Decoder.t
+  module EncoderWithoutHeader: S.ENCODER with type t = t and type init = int * t and type error = Error.never
 
   val to_deflated_raw: ?capacity:int -> ?level:int -> ztmp:Cstruct.t -> t ->
     (string, E.error) result
