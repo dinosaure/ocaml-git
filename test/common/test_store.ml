@@ -35,7 +35,7 @@ let long_random_string () =
 
 module type S = sig
   include Git.S
-  val create: Fpath.t -> (t, error) result Lwt.t
+  val v: Fpath.t -> (t, error) result Lwt.t
 end
 
 module Make (Store : S) = struct
@@ -115,7 +115,8 @@ module Make (Store : S) = struct
   let t5 = lazy (Store.Value.tree
                    (Store.Value.Tree.of_list
                       [ { Store.Value.Tree.perm = `Normal
-                        ; name = long_random_string ()
+                        ; name = Astring.String.map (function '\000' -> '\001' | chr -> chr) (long_random_string ())
+                        (* XXX(dinosaure): impossible to store an entry with \000 *)
                         ; node = !!kv2 }
                       ; { Store.Value.Tree.perm = `Dir
                         ; name = "a"
@@ -235,7 +236,7 @@ module Make (Store : S) = struct
   let root = Fpath.v "test-git-store"
 
   let create ~root ?(index=false) () =
-    Store.create root >>= check_err >>= fun t ->
+    Store.v root >>= check_err >>= fun t ->
     reset t >>= fun () ->
     Lwt_list.iter_s (fun v ->
         Store.write t v >|= function
@@ -316,7 +317,7 @@ module Make (Store : S) = struct
     in
     let test () =
       match ValueIO.to_raw c with
-      | Error e -> Alcotest.failf "%a" ValueIO.EE.pp_error e
+      | Error e -> Alcotest.failf "%a" ValueIO.EncoderRaw.pp_error e
       | Ok raw  ->
         match ValueIO.of_raw_with_header (Cstruct.of_string raw) with
         | Error err -> Alcotest.failf "decoder: %a" Git.Error.Decoder.pp_error err
@@ -355,12 +356,12 @@ module Make (Store : S) = struct
       Store.Ref.write t r1 (Store.Reference.Hash !!kt4)
       >>= check_err >>= fun () ->
       Store.Ref.read  t r1
-      >>= check_err >>= fun (_, kt4') ->
+      >>= check_err >>= fun kt4' ->
       assert_head_contents_equal "r1" (Store.Reference.Hash !!kt4) kt4';
 
       Store.Ref.write t r2 (Store.Reference.Hash !!kc2)
       >>= check_err >>= fun ()   ->
-      Store.Ref.read  t r2 >>= check_err >>= fun (_, kc2') ->
+      Store.Ref.read  t r2 >>= check_err >>= fun kc2' ->
       assert_head_contents_equal "r2" (Store.Reference.Hash !!kc2) kc2';
 
       Store.Ref.list t >>= fun rs ->
@@ -370,7 +371,7 @@ module Make (Store : S) = struct
       Store.Ref.write t Store.Reference.head (Store.Reference.Hash commit)
       >>= check_err >>= fun () ->
       Store.Ref.read t Store.Reference.head
-      >>= check_err >|= fun (_, value) ->
+      >>= check_err >|= fun value ->
       Alcotest.(check head_contents) "head" (Store.Reference.Hash commit) value
     in
     run test

@@ -266,7 +266,8 @@ module type S = sig
     val normalize: Hash.t Reference.Map.t -> Reference.head_contents -> (Hash.t, error) result Lwt.t
     val list: t -> (Reference.t * Hash.t) list Lwt.t
     val remove: t -> Reference.t -> (unit, error) result Lwt.t
-    val read: t -> Reference.t -> ((Reference.t * Reference.head_contents), error) result Lwt.t
+    val read: t -> Reference.t -> (Reference.head_contents, error) result Lwt.t
+    val resolve: t -> Reference.t -> (Hash.t, error) result Lwt.t
     val write: t -> Reference.t -> Reference.head_contents -> (unit, error) result Lwt.t
   end
 
@@ -282,7 +283,7 @@ module Option = struct
   let map f a = match a with Some a -> Some (f a) | None -> None
 end
 
-module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
+module Make (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
 
   module Hash = H
   module Inflate = I
@@ -671,7 +672,7 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
              let open PInfo in
 
              match hunks_descr.HDec.reference with
-             | HDec.Hash hash when not (Radix.mem info.tree hash) ->
+             | HDec.Hash hash when not (Map.mem hash info.tree) ->
                (try List.find (Hash.equal hash) acc |> fun _ -> acc
                 with Not_found -> hash :: acc)
              | _ -> acc)
@@ -687,7 +688,7 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
       in
 
       let get hash =
-        if PInfo.Radix.mem info.PInfo.tree hash
+        if PInfo.Map.mem hash info.PInfo.tree
         then
           with_buffer git @@ fun { ztmp; window; _ } ->
           RPDec.get_with_result_allocation_from_hash
@@ -704,7 +705,7 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
 
       let tag _ = false in
 
-      PInfo.Radix.to_list info.PInfo.tree
+      PInfo.Map.bindings info.PInfo.tree
       |> Lwt_list.fold_left_s make []
       >>= external_ressources
       >>= fun entries -> PEnc.Delta.deltas ~memory:false entries get tag 10 50
@@ -715,7 +716,7 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
           (Fmt.strf "pack-%s.pack")
           entries
           (fun hash ->
-             if PInfo.Radix.mem info.PInfo.tree hash
+             if PInfo.Map.mem hash info.PInfo.tree
              then
                with_buffer git @@ fun { ztmp; window; _ } ->
                RPDec.get_with_result_allocation_from_hash
@@ -805,7 +806,9 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
 
         RPDec.make fdp
           (fun _ -> None)
-          (fun hash -> PInfo.Radix.lookup info.PInfo.tree hash)
+          (fun hash ->
+            try Some (PInfo.Map.find hash info.PInfo.tree)
+            with Not_found -> None)
           (* XXX(dinosaure): this function will be updated. *)
           (fun _ -> None)
           (fun hash -> extern git hash)
@@ -847,7 +850,7 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
                | Ok obj ->
                  let hash = hash_of_object obj in
                  let crc = crc obj in
-                 let tree = PInfo.Radix.bind tree hash (crc, offset) in
+                 let tree = PInfo.Map.add hash (crc, offset) tree in
 
                  let graph =
                    let open PInfo in
@@ -857,9 +860,8 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
                        (try Graph.find Int64.(sub offset rel_off) graph
                         with Not_found -> 0, None)
                      | HDec.Hash hash_source ->
-                       try match Radix.lookup tree hash_source with
-                         | Some (_, abs_off) -> Graph.find abs_off graph
-                         | None -> 0, None
+                       try let _, abs_off = Map.find hash_source tree in
+                           Graph.find abs_off graph
                        with Not_found -> 0, None
                    in
 
@@ -867,7 +869,9 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
                  in
 
                  Lwt.return
-                   (RPDec.update_idx (PInfo.Radix.lookup tree) decoder,
+                   (RPDec.update_idx (fun key ->
+                        try Some (PInfo.Map.find key tree)
+                        with Not_found -> None) decoder,
                     tree, graph)
                | Error err ->
                  Log.err (fun l -> l ~header:"from" "Retrieve an error when we try to \
@@ -893,7 +897,7 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
                  match hunks_descr.HDec.reference with
                  | HDec.Offset _ -> Lwt.return true
                  | HDec.Hash hash ->
-                   Lwt.return (Radix.mem tree' hash))
+                   Lwt.return (Map.mem hash tree'))
               delta
             >>= fun is_not_thin ->
             if is_not_thin
@@ -1227,17 +1231,24 @@ module FS (H: S.HASH) (FS: S.FS) (I: S.INFLATE) (D: S.DEFLATE) = struct
       | Ok true ->
         (with_buffer t @@ fun { dtmp; raw; _ } ->
          Reference.read ~fs:t.fs ~root:t.dotgit ~dtmp ~raw reference >|= function
-         | Ok _ as v -> v
+         | Ok (_, v) -> Ok v
          | Error e   -> Error (e :> error))
       | Ok false | Error _ ->
-        let r =
+        let v =
           if Hashtbl.mem t.packed reference
           then
-            try Ok (reference, Reference.Hash (Hashtbl.find t.packed reference))
+            try Ok (Reference.Hash (Hashtbl.find t.packed reference))
             with Not_found -> Error `Not_found
           else Error `Not_found
         in
-        Lwt.return r
+        Lwt.return v
+
+    let resolve t reference =
+      graph t >>= function
+      | Error _ as err -> Lwt.return err
+      | Ok graph ->
+         try Lwt.return (Ok (Graph.find reference graph))
+         with Not_found -> Lwt.return (Error `Not_found)
 
     let write t reference value =
       with_buffer t (fun { raw; _ } ->

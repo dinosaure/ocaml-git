@@ -105,16 +105,10 @@ module type S = sig
   val equal_head_contents: head_contents -> head_contents -> bool
   val compare_head_contents: head_contents -> head_contents -> int
 
-  module A: S.ANGSTROM with type t = head_contents
-  module D: S.DECODER
-    with type t = head_contents
-     and type init = Cstruct.t
-     and type error = Error.Decoder.t
-  module M: S.MINIENC with type t = head_contents
-  module E: S.ENCODER
-    with type t = head_contents
-     and type init = int * head_contents
-     and type error = Error.never
+  module A: S.DESC with type 'a t = 'a Angstrom.t and type e = head_contents
+  module M: S.DESC with type 'a t = 'a Encore.Encoder.t and type e = head_contents
+  module D: S.DECODER with type t = head_contents and type init = Cstruct.t and type error = Error.Decoder.t
+  module E: S.ENCODER with type t = head_contents and type init = int * head_contents and type error = Error.never
 end
 
 module type IO = sig
@@ -149,8 +143,9 @@ module type IO = sig
     -> t -> (unit, error) result Lwt.t
 end
 
-module Make(H : S.HASH): S with module Hash = H = struct
-  module Hash = H
+module Make (Hash: S.HASH): S with module Hash = Hash = struct
+
+  module Hash = Hash
 
   type nonrec t = t
 
@@ -197,58 +192,70 @@ module Make(H : S.HASH): S with module Hash = H = struct
     | Ref _, Hash _ -> 1
     | Hash _, Ref _ -> -1
 
-  module A = struct
-    type nonrec t = head_contents
+  module MakeMeta (Meta: Encore.Meta.S) =
+    struct
+      type e = head_contents
 
-    open Angstrom
+      open Helper.BaseIso
 
-    let refname =
-      take_while (function '\000' .. '\039' -> false
-                         | '\127'           -> false
-                         | '~' | '^'
-                         | ':' | '?' | '*'
-                         | '['              -> false
-                         | _                -> true)
+      module Iso =
+        struct
+          open Encore.Bijection
 
-    let hash = take (Hash.Digest.length * 2)
-      >>| Hash.of_hex
+          let hex =
+            let tag = ("string", "hex") in
+            make_exn ~tag
+              ~fwd:(Exn.safe_exn tag Hash.of_hex)
+              ~bwd:(Exn.safe_exn (Helper.Pair.flip tag) Hash.to_hex)
 
-    let decoder =
-      (string "ref: " *> refname <* end_of_line >>| fun refname -> Ref refname)
-      <|> (hash <* end_of_line >>| fun hash -> Hash hash)
+          let refname =
+            let tag = ("string", "reference") in
+            make_exn
+              ~tag
+              ~fwd:(Exn.safe_exn tag of_string)
+              ~bwd:(Exn.safe_exn (Helper.Pair.flip tag) to_string)
 
-    (* XXX(dinosaure): [end_of_line] expect a LF at the end of the
-       input. In the RFC, it's not clear if we need to write LF
-       character or not. In general, we found the LF character but if
-       we have a problem to read a reference, may be is about this
-       issue. *)
-  end
+          let hash =
+            make_exn
+              ~tag:("hash", "head_contents")
+              ~fwd:(fun hash -> Hash hash)
+              ~bwd:(function
+                | Hash hash -> hash
+                | _ -> Exn.fail "head_contents" "hash")
 
-  module M = struct
-    type t  = head_contents
+          let reference =
+            make_exn
+              ~tag:("reference", "head_contents")
+              ~fwd:(fun reference -> Ref reference)
+              ~bwd:(function
+                | Ref r -> r
+                | _ -> Exn.fail "head_contents" "reference")
+        end
 
-    open Minienc
+      type 'a t = 'a Meta.t
 
-    let lf = '\n'
+      module Meta = Encore.Meta.Make(Meta)
+      open Meta
 
-    let encoder x k e = match x with
-      | Hash hash   -> write_string (Hash.to_hex hash) (write_char lf k) e
-      | Ref refname ->
-        (write_string "ref: "
-         @@ write_string refname
-         @@ write_char lf k)
-          e
-  end
+      let is_not_lf = (<>) '\n'
 
+      let hash = Iso.hex <$> (take (Hash.Digest.length * 2)) <* (char_elt '\n' <$> any)
+      let reference = (string_elt "ref: " <$> const "ref: ") *> (Iso.refname <$> (while1 is_not_lf)) <* (char_elt '\n' <$> any)
+
+      let p = (Iso.reference <$> reference) <|> (Iso.hash <$> hash)
+    end
+
+  module A = MakeMeta(Encore.Proxy_decoder.Impl)
+  module M = MakeMeta(Encore.Proxy_encoder.Impl)
   module D = Helper.MakeDecoder(A)
   module E = Helper.MakeEncoder(M)
 end
 
-module IO (H : S.HASH) (FS: S.FS) = struct
+module IO (Hash: S.HASH) (FS: S.FS) = struct
 
   module FS = Helper.FS(FS)
 
-  include Make(H)
+  include Make(Hash)
 
   module Encoder = struct
     module E = struct
@@ -264,6 +271,8 @@ module IO (H : S.HASH) (FS: S.FS) = struct
     end
     include Helper.Encoder(E)(FS)
   end
+
+  module Decoder = Helper.Decoder(D)(FS)
 
   type fs_error = FS.error Error.FS.t
   type error =
@@ -296,34 +305,12 @@ module IO (H : S.HASH) (FS: S.FS) = struct
     | Error _ -> false
 
   let read ~fs ~root reference ~dtmp ~raw : (_, error) result Lwt.t =
-    let decoder = D.default dtmp in
-    let path = Fpath.(root // (to_path reference)) in
-    Log.debug (fun l -> l "Reading the reference: %a." Fpath.pp path);
-    FS.with_open_r fs path @@ fun read ->
-    let rec loop decoder = match D.eval decoder with
-      | `End (_, value) -> Lwt.return (Ok value)
-      | `Error (_, (#Error.Decoder.t as err)) ->
-        Lwt.return Error.(v @@ Decoder.with_path path err)
-      | `Await decoder ->
-        FS.File.read raw read >>= function
-        | Error err -> Lwt.return Error.(v @@ FS.err_read path err)
-        | Ok 0 -> loop (D.finish decoder)
-        (* XXX(dinosaure): in this case, we read a file, so when we
-           retrieve 0 bytes, that means we get end of the file. We
-           can finish the deserialization. *)
-        | Ok n -> match D.refill (Cstruct.sub raw 0 n) decoder with
-          | Ok decoder -> loop decoder
-          | Error (#Error.Decoder.t as err) ->
-            Lwt.return Error.(v @@ Decoder.with_path path err)
-    in
-    loop decoder >|= function
-    | Error _ as e     -> e
-    | Ok head_contents ->
-      let reference' = normalize path in
-      Log.debug (fun l ->
-          l "Normalize reference %a = %a." pp reference pp reference');
-      assert (equal reference reference');
-      Ok (normalize path, head_contents)
+    let state = D.default dtmp in
+    let file  = Fpath.(root // (to_path reference)) in
+    Decoder.of_file fs file raw state >|= function
+    | Ok v -> (Ok (normalize file, v))
+    | Error (`Decoder err) -> Error.(v @@ Error.Decoder.with_path file err)
+    | Error #fs_error as err -> err
 
   let write ~fs ~root ?(capacity = 0x100) ~raw reference value =
     let state = E.default (capacity, value) in
@@ -342,5 +329,4 @@ module IO (H : S.HASH) (FS: S.FS) = struct
     FS.File.delete fs path >|= function
     | Ok _ as v -> v
     | Error err -> Error.(v @@ FS.err_delete path err)
-
 end

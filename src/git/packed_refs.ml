@@ -22,15 +22,10 @@ module type S = sig
 
   type t = [ `Peeled of Hash.t | `Ref of string * Hash.t ] list
 
-  module A: S.ANGSTROM with type t = t
-  module D: S.DECODER
-    with type t = t
-     and type init = Cstruct.t
-     and type error = Error.Decoder.t
-  module M: S.MINIENC with type t = t
-  module E: S.ENCODER
-    with type t = t
-     and type init = int * t
+  module A: S.DESC    with type 'a t = 'a Angstrom.t with type e = t
+  module M: S.DESC    with type 'a t = 'a Encore.Encoder.t with type e = t
+  module D: S.DECODER with type t = t and type init = Cstruct.t and type error = Error.Decoder.t
+  module E: S.ENCODER with type t = t and type init = int * t
 
   type error =
     [ Error.Decoder.t
@@ -54,9 +49,10 @@ module Make (H: S.HASH) (FS: S.FS) = struct
   and hash = Hash.t
 
   module A = struct
-    type nonrec t = t
+    type e = t
 
     open Angstrom
+    type 'a t = 'a Angstrom.t
 
     let hash =
       take (Hash.Digest.length * 2)
@@ -88,7 +84,7 @@ module Make (H: S.HASH) (FS: S.FS) = struct
         end_of_line >>= fun () ->
         return (`Ref (refname, hash))
 
-    let decoder =
+    let p =
       fix @@ fun m ->
       (peek_char >>= function
         | Some '#' ->
@@ -99,9 +95,10 @@ module Make (H: S.HASH) (FS: S.FS) = struct
   end
 
   module M = struct
-    type nonrec t = t
+    type e = t
 
-    open Minienc
+    open Encore.Lole
+    type 'a t = 'a Encore.Encoder.t
 
     let write_newline k e =
       if Sys.win32
@@ -139,6 +136,9 @@ module Make (H: S.HASH) (FS: S.FS) = struct
        @@ write_newline
        @@ write_list ~sep:write_newline write_info l k)
         e
+
+    let p =
+      let module M = Encore.Encoder.Make(struct type a = e let run k e l = encoder l k e end) in M.x
   end
 
   module D = Helper.MakeDecoder(A)
@@ -155,25 +155,15 @@ module Make (H: S.HASH) (FS: S.FS) = struct
 
   open Lwt.Infix
 
+  module Decoder = Helper.Decoder(D)(FS)
+
   let read ~fs ~root ~dtmp ~raw =
-    let decoder = D.default dtmp in
-    let path = Fpath.(root / "packed-refs") in
-    FS.with_open_r fs path @@ fun read ->
-    let rec loop decoder = match D.eval decoder with
-      | `End (_, value)               -> Lwt.return (Ok value)
-      | `Error (_, (#Error.Decoder.t as err)) ->
-        Lwt.return Error.(v @@ Error.Decoder.with_path path err)
-      | `Await decoder ->
-        FS.File.read raw read >>= function
-        | Error err -> Lwt.return Error.(v @@ Error.FS.err_read path err)
-        | Ok 0      -> loop (D.finish decoder)
-        | Ok n      ->
-          match D.refill (Cstruct.sub raw 0 n) decoder with
-          | Ok decoder              -> loop decoder
-          | Error (#Error.Decoder.t as err) ->
-            Lwt.return Error.(v @@ Error.Decoder.with_path path err)
-    in
-    loop decoder
+    let state = D.default dtmp in
+    let file  = Fpath.(root / "packed-refs") in
+    Decoder.of_file fs file raw state >|= function
+    | Ok _ as v -> v
+    | Error (`Decoder err) -> Error.(v @@ Error.Decoder.with_path file err)
+    | Error #fs_error as err -> err
 
   module Encoder = struct
     module E = struct
