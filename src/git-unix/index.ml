@@ -1913,7 +1913,7 @@ module Make (Hash: Git.HASH) (Store: Git.S with module Hash = Hash) (FS: Git.FS)
           if Cstruct.len raw = 0
           then Lwt.return (Ok ())
           else FS.File.write raw fd >!= file_err >?= function
-              | 0 when retry >= 50 -> Lwt.return (Error `Stack)
+              | 0 when retry >= 50 -> Lwt.return Git.Error.(v @@ FS.err_stack path)
               | 0 -> loop ~retry:(retry + 1) raw
               | len ->
                 loop ~retry:0 (Cstruct.shift raw len)
@@ -1950,7 +1950,7 @@ module Make (Hash: Git.HASH) (Store: Git.S with module Hash = Hash) (FS: Git.FS)
 
   let write_tree fs dir =
     FS.Dir.create fs dir
-    >!= (fun err -> Lwt.return (`Directory err))
+    >|= Rresult.R.reword_error (Git.Error.FS.err_create dir)
     >?= (fun _ -> Lwt.return (Ok ()))
 
   let index_to_store git fs ~dtmp =
@@ -1979,18 +1979,14 @@ module Make (Hash: Git.HASH) (Store: Git.S with module Hash = Hash) (FS: Git.FS)
     let hash_of_entry entry = entry.Entry.hash
 
     let rec entries_to_tree ~bucket entries =
-      List.map
-        (fun (name, entry) ->
-          match entry with
+      List.map (fun (name, entry) -> match entry with
           | Blob entry ->
-             { Store.Value.Tree.perm = Entry.perm_of_kind entry.Entry.info.Entry.mode
-             ; name
-             ; node = hash_of_entry entry }
+            let perm = Entry.perm_of_kind entry.Entry.info.Entry.mode in
+            Store.Value.Tree.entry name perm (hash_of_entry entry)
           | Tree entries ->
-             { Store.Value.Tree.perm = `Dir
-             ; name
-             ; node = hash_of_tree ~bucket entries })
-        (StringMap.bindings entries)
+            Store.Value.Tree.entry name `Dir (hash_of_tree ~bucket entries)
+        ) (StringMap.bindings entries)
+
     and hash_of_tree ~bucket entries =
       let entries = entries_to_tree ~bucket entries in
       let tree = Store.Value.Tree.of_list entries in
@@ -2100,7 +2096,7 @@ module Make (Hash: Git.HASH) (Store: Git.S with module Hash = Hash) (FS: Git.FS)
   module Snapshot =
   struct
     let from_tree git fs hash =
-      make_from_tree ~path:(Store.root git) git hash >>= fun root ->
+      make_from_tree ~path:(Fpath.v ".") git hash >>= fun root ->
       lwt_result_traversal
         ~root:(Store.root git)
         []
