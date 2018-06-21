@@ -510,6 +510,8 @@ module Make
 
     exception Fail of RPDec.error
 
+    module Second_pass = Second_pass.Make(Hash)(FS)(Inflate)(Deflate)(HDec)(PDec)(PInfo)(RPDec)
+
     (* [second_pass] allows to analyse all compressed chains of
        objects and to discover if the pack file is thin or not.
 
@@ -525,6 +527,8 @@ module Make
                          ; promote = (fun _ _ -> ()) } in
       let cache_object = { RPDec.Cache.find = (fun _ -> None)
                          ; promote = (fun _ _ -> ()) } in
+
+      Second_pass.second_pass normalized.pack normalized.info >>= fun _ ->
 
       let resolve abs_off =
         RPDec.Ascendant.needed_from_absolute_offset ~ztmp ~zwin ~cache:cache_needed normalized.pack abs_off >>= function
