@@ -1475,9 +1475,12 @@ struct
             dst t
       | None ->
           ( KEntry.put_varint 0
-          @@ KEntry.put_string (Fpath.to_string x.Entry.path) k )
+          @@ KEntry.put_string (fpath_to_unix_path_string x.Entry.path) k )
             dst t
-    else KEntry.put_string (Fpath.to_string x.Entry.path) (padding k) dst t
+    else
+      KEntry.put_string
+        (fpath_to_unix_path_string x.Entry.path)
+        (padding k) dst t
 
   let hash dst t =
     let hash = Hash.get t.hash in
