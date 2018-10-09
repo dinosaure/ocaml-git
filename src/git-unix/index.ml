@@ -1979,12 +1979,19 @@ struct
       (write_blob_entry_with_acc git fs)
       (write_tree fs) (of_entries entries)
 
+  let relativize ~root path =
+    let res = Fpath.relativize ~root path in
+    Log.debug (fun l ->
+        l "Relative %a with %a = %a." Fpath.pp path Fpath.pp root Fpath.pp res
+    ) ;
+    res
+
   let store_entries git fs ~dtmp:raw entries =
     IO.store ~root:(Store.dotgit git) ~raw fs
       (List.map
          (fun entry ->
            Entry.with_path entry
-             (Fpath.relativize ~root:(Store.root git) entry.Entry.path) )
+             (relativize ~root:(Store.root git) entry.Entry.path) )
          entries)
 
   let chain_of_path path =
