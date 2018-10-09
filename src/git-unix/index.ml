@@ -1982,8 +1982,8 @@ struct
   let relativize ~root path =
     let res = Fpath.relativize ~root path in
     Log.debug (fun l ->
-        l "Relative %a with %a = %a." Fpath.pp path Fpath.pp root Fpath.pp res
-    ) ;
+        l "Relative %a with %a = %a." Fpath.pp path Fpath.pp root
+          (Fmt.Dump.option Fpath.pp) res ) ;
     res
 
   let store_entries git fs ~dtmp:raw entries =
