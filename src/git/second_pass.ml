@@ -133,8 +133,10 @@ struct
   let resolver ~thread:_ ~ztmp ~zwin context (_, (value, _)) =
     match value with
     | PInfo.Unresolved _ | PInfo.Delta _ -> assert false
-    | PInfo.Internal {length; abs_off; _} -> (
+    | PInfo.Internal {length; abs_off; hash} -> (
+        Log.debug (fun l -> l "Start to resolve children of %a." Hash.pp hash) ;
         let base = Cstruct.create length in
+        let base_hash = hash in
         let children (abs_off, hash) =
           List.map
             (fun idx ->
@@ -158,6 +160,9 @@ struct
                       ; depth
                       ; from= parent }
                   in
+                  Log.debug (fun l ->
+                      l "Resolve children %a from base:%a." Hash.pp
+                        patch.RPDec.Descendant.hash Hash.pp base_hash ) ;
                   context.queue.(idx)
                   <- ( patch.RPDec.Descendant.offset
                      , ( value
@@ -175,6 +180,9 @@ struct
                       ; depth
                       ; from= parent }
                   in
+                  Log.debug (fun l ->
+                      l "Resolve children (leaf) %a from base:%a." Hash.pp
+                        patch.RPDec.Descendant.hash Hash.pp base_hash ) ;
                   context.queue.(idx)
                   <- ( patch.RPDec.Descendant.offset
                      , ( value
@@ -246,7 +254,7 @@ struct
               ( add_ofs Int64.(sub abs_off rel_off) idx ofs_deltas
               , ref_deltas
               , idx + 1 )
-          | _ -> ofs_deltas, ref_deltas, idx + 1 )
+          | PInfo.Internal _ -> ofs_deltas, ref_deltas, idx + 1 )
         (OfsMap.empty, RefMap.empty, 0)
         matrix
       |> fun (ofs_deltas, ref_deltas, _) -> ofs_deltas, ref_deltas
@@ -270,10 +278,10 @@ struct
       [ Lwt_pool.use pool (fun (ztmp, zwin) ->
             dispatcher ~thread:0 ~ztmp ~zwin context )
       ; Lwt_pool.use pool (fun (ztmp, zwin) ->
-            dispatcher ~thread:1 ~ztmp ~zwin context )
+            dispatcher ~thread:0 ~ztmp ~zwin context )
       ; Lwt_pool.use pool (fun (ztmp, zwin) ->
-            dispatcher ~thread:2 ~ztmp ~zwin context )
+            dispatcher ~thread:0 ~ztmp ~zwin context )
       ; Lwt_pool.use pool (fun (ztmp, zwin) ->
-            dispatcher ~thread:3 ~ztmp ~zwin context ) ]
+            dispatcher ~thread:0 ~ztmp ~zwin context ) ]
     >>= fun () -> Lwt.return matrix
 end

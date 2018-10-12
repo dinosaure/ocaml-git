@@ -635,7 +635,7 @@ module FS (FS : S.FS) = struct
 
   let temp_file_name temp_dir file =
     let rnd = Random.State.bits (Lazy.force prng) land 0xFFFFFF in
-    Fpath.(temp_dir / Fmt.strf "%s.%06x" file rnd)
+    Gpath.(temp_dir + (empty / Fmt.strf "%s.%06x" file rnd))
 
   let temp_file t temp_dir file =
     let rec aux counter =
