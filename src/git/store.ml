@@ -885,7 +885,7 @@ struct
               match Fpath.relativize ~root:dotgit fpath with
               | Some segs ->
                   Log.debug (fun l -> l "Relativize %a." Fpath.pp fpath) ;
-                  Gpath.v (Fpath.to_string segs) :: acc
+                  Gpath.of_segs (Fpath.segs segs) :: acc
               | None -> acc )
             [] refs
           |> Lwt.return_ok

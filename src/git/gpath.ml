@@ -31,7 +31,7 @@ let compare a b = compare (List.rev a) (List.rev b)
 let equal = ( = )
 let pp ppf x = Fmt.pf ppf "%a" Fmt.(list ~sep:(unit "/") string) (List.rev x)
 let to_string = Fmt.to_to_string pp
-let of_segs l = List.map check_segment l
+let of_segs l = List.rev (List.map check_segment l)
 let ( + ) fpath gpath = List.fold_left Fpath.( / ) fpath (List.rev gpath)
 
 (* ext *)
